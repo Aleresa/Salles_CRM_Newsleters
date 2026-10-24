@@ -32,7 +32,7 @@ async function api(path,method='GET',body,{timeout=25000}={}){
 async function init(){
   try{
     tg?.ready();tg?.expand();
-    if(tg?.isVersionAtLeast?.('6.1')){tg.setHeaderColor('#0052fe');tg.setBackgroundColor('#f5f8ff');}
+    if(tg?.isVersionAtLeast?.('6.1')){tg.setHeaderColor('#C7B3F0');tg.setBackgroundColor('#FAF8FE');}
     const config=await api('/bootstrap');
     state.preview=config.mode==='preview';state.ready=Boolean(config.notificationReady);
     if(state.preview){state.shipments=(await (await fetch('./data/catalog.json')).json()).shipments;notice('Предпросмотр: условные товары для проверки интерфейса. Отправка заказов отключена.');}

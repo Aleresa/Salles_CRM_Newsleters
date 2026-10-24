@@ -11,7 +11,7 @@ const moneyFormats=[0,2].map(maximumFractionDigits=>new Intl.NumberFormat('ru-RU
 const money=n=>moneyFormats[n%100?1:0].format(n/100);
 const date=s=>s?new Date(s.length===10?s+'T12:00:00':s).toLocaleDateString('ru-RU',{day:'numeric',month:'long'}):'Дата не указана';
 const statuses={draft:'Черновик',arrived:'В продаже',closed:'Продажа закрыта',placed:'Оформлен',confirmed:'Подтверждён',cancelled:'Отменён'};
-const state={preview:false,admin:false,ready:false,view:'shipments',shipments:[],current:null,filter:'all',sort:'new',search:'',cart:{},images:{},orders:[],requestKey:null,managers:[],managerId:null,productGroup:''};
+const state={preview:false,admin:false,ready:false,view:'shipments',shipments:[],current:null,filter:'all',sort:'new',search:'',cart:{},images:{},orders:[],requestKey:null,productGroup:''};
 let toastTimer,refreshPromise,importController;
 const imageRequests=new Map();
 const debounce=(fn,delay=120)=>{let timer;return (...args)=>{clearTimeout(timer);timer=setTimeout(()=>fn(...args),delay);};};
@@ -73,7 +73,7 @@ function render(){
   if(tg?.BackButton){if(state.current){tg.BackButton.show();}else{tg.BackButton.hide();}}
 }
 function renderShipments(){
-  app.innerHTML=`<div class="page-heading"><div><p class="eyebrow">SALLES / NEWSLETTERS</p><h1>Поступление</h1><p class="subtitle">Товары уже в наличии. Выберите нужное и оформите заказ.</p></div><span class="count">${state.shipments.length} поступлений</span></div>
+  app.innerHTML=`<div class="page-heading"><div><h1>Поступление</h1><p class="subtitle">Товары уже в наличии. Выберите нужное и оформите заказ.</p></div><span class="count">${state.shipments.length} поступлений</span></div>
   <div class="toolbar"><input class="search" id="shipment-search" type="search" placeholder="Найти поступление или бренд" aria-label="Поиск поступления" value="${esc(state.search)}"><select id="sort" aria-label="Сортировка"><option value="new">Сначала новые</option><option value="eta">По дате поступления</option><option value="old">Сначала старые</option></select></div>
   <div class="chips">${[['all','Все поступления'],['arrived','В продаже'],['closed','Завершённые']].map(([id,label])=>`<button class="chip ${state.filter===id?'active':''}" data-filter="${id}">${label}</button>`).join('')}</div><div class="shipment-grid" id="shipment-grid"></div>`;
   $('#sort').value=state.sort;
@@ -133,32 +133,28 @@ function cartBar(){
 function closeDialog(){importController?.abort();dialog.close();}
 function showDialog(title,body){dialog.innerHTML=`<div class="dialog-header"><h2>${esc(title)}</h2><button class="icon-button" id="close-dialog" aria-label="Закрыть">×</button></div>${body}`;$('#close-dialog').onclick=closeDialog;if(!dialog.open)dialog.showModal();}
 async function showCart(){
-  try{if(!state.preview)state.managers=(await api('/managers')).managers;}catch(e){toast(e.message);return;}
-  if(!state.managers.some(m=>m.id===state.managerId)){state.managerId=null;state.requestKey=null;}
   const s=activeShipment(),t=totals();if(!s || !t.count)return;
-  showDialog('Ваш заказ',`<p class="muted">${esc(s.title)}</p>${Object.entries(state.cart).map(([id,q])=>{const p=s.products.find(p=>p.id===id);return `<div class="cart-line"><p>${esc(p.name)}</p><span class="muted">${esc(p.sku)} · ${q} шт. × ${money(p.price)}</span></div>`;}).join('')}<div class="cart-total"><span>${t.count} шт.</span><span>${money(t.total)}</span></div><label class="field">Ваш менеджер<select id="placeOrder-manager" required><option value="">Выберите менеджера</option>${state.managers.map(m=>`<option value="${esc(m.id)}" ${m.id===state.managerId?'selected':''}>${esc(m.name)}</option>`).join('')}</select></label>${!state.preview&&!state.managers.length?'<p class="warning">Список менеджеров ещё не заполнен. Обратитесь в магазин.</p>':''}<label class="field">Комментарий<textarea id="comment" maxlength="1000" placeholder="Например, название магазина"></textarea></label><p class="fine-print">После оформления количество товара в наличии сразу уменьшится.</p>${state.preview?'<p class="warning">Предпросмотр. Заказ не будет оформлен.</p>':''}<p id="placeOrder-error" class="error" role="alert"></p><button class="primary full" id="submit-placeOrder" ${state.preview||!state.ready||!state.managerId?'disabled':''}>Оформить заказ</button>`);
+  showDialog('Ваш заказ',`<p class="muted">${esc(s.title)}</p>${Object.entries(state.cart).map(([id,q])=>{const p=s.products.find(p=>p.id===id);return `<div class="cart-line"><p>${esc(p.name)}</p><span class="muted">${esc(p.sku)} · ${q} шт. × ${money(p.price)}</span></div>`;}).join('')}<div class="cart-total"><span>${t.count} шт.</span><span>${money(t.total)}</span></div><label class="field">Комментарий<textarea id="comment" maxlength="1000" placeholder="Например, название магазина"></textarea></label><p class="fine-print">После оформления количество товара в наличии сразу уменьшится.</p>${state.preview?'<p class="warning">Предпросмотр. Заказ не будет оформлен.</p>':''}<p id="placeOrder-error" class="error" role="alert"></p><button class="primary full" id="submit-placeOrder" ${state.preview||!state.ready?'disabled':''}>Оформить заказ</button>`);
   $('#comment').oninput=()=>state.requestKey=null;
-  $('#placeOrder-manager').onchange=e=>{state.managerId=e.target.value||null;state.requestKey=null;$('#submit-placeOrder').disabled=state.preview||!state.ready||!state.managerId;};
   $('#submit-placeOrder').onclick=async()=>{
-    if(!state.managerId){$('#placeOrder-error').textContent='Выберите менеджера.';return;}
-    const button=$('#submit-placeOrder');$('#placeOrder-manager').disabled=true;button.disabled=true;button.textContent='Отправляем…';$('#placeOrder-error').textContent='';$('#comment').disabled=true;
+    const button=$('#submit-placeOrder');button.disabled=true;button.textContent='Отправляем…';$('#placeOrder-error').textContent='';$('#comment').disabled=true;
     state.requestKey ||= crypto.randomUUID();
     const key=state.requestKey;
     try{
-      const {order}=await api('/orders','POST',{shipmentId:s.id,requestKey:key,managerId:state.managerId,lines:Object.entries(state.cart).map(([id,quantity])=>({id,quantity})),comment:$('#comment').value});
+      const {order}=await api('/orders','POST',{shipmentId:s.id,requestKey:key,lines:Object.entries(state.cart).map(([id,quantity])=>({id,quantity})),comment:$('#comment').value});
       state.cart={};state.requestKey=null;closeDialog();cartBar();
-      toast(`Заказ №${order.id.slice(0,8)} оформлен. Он появится в канале для менеджера.`);
+      toast(`Заказ №${order.id.slice(0,8)} оформлен. Уведомление появится в канале заказов.`);
       state.shipments=(await api('/catalog')).shipments;state.view='orders';render();
     }catch(e){
       // Same idempotency key is retained for a network retry, even if response was lost.
-      if(dialog.open&&$('#placeOrder-error')){$('#placeOrder-error').textContent=e.message;button.disabled=false;button.textContent='Повторить отправку';$('#comment').disabled=false;$('#placeOrder-manager').disabled=false;}
+      if(dialog.open&&$('#placeOrder-error')){$('#placeOrder-error').textContent=e.message;button.disabled=false;button.textContent='Повторить отправку';$('#comment').disabled=false;}
       else toast('Проверьте «Мои Заказы»: запрос мог быть выполнен.');
     }
   };
 }
 async function renderOrders(all=false){
   state.view=all?'all-orders':'orders';
-  app.innerHTML=`<div class="page-heading"><div><p class="eyebrow">SALLES / NEWSLETTERS</p><h1>${all?'Все заказы':'Мои заказы'}</h1></div>${all?'<button class="secondary" id="export">Excel ↓</button>':''}</div><div id="orders"><p class="empty">Загружаем…</p></div>`;
+  app.innerHTML=`<div class="page-heading"><div><h1>${all?'Все заказы':'Мои заказы'}</h1></div>${all?'<button class="secondary" id="export">Excel ↓</button>':''}</div><div id="orders"><p class="empty">Загружаем…</p></div>`;
   if(!all && !state.preview && state.user)$('#orders').insertAdjacentHTML('beforebegin',`<p class="muted">Заказы привязаны к вашему Telegram-аккаунту.</p>`);
   if(state.preview){$('#orders').innerHTML='<div class="empty"><strong>Здесь будут ваши заказы</strong>Отправка появится после подключения бота и рабочего канала.</div>';return;}
   const container=$('#orders');
@@ -166,7 +162,7 @@ async function renderOrders(all=false){
     const {orders}=await api('/orders'+(all?'?all=1':''));
     if(!container.isConnected)return;
     state.orders=orders;
-    $('#orders').innerHTML=orders.length?orders.map(r=>`<article class="order"><div class="top"><div><small>№ ${esc(r.id.slice(0,8))} · ${date(r.createdAt)}</small><h3 style="margin-top:8px">${esc(r.shipmentTitle)}</h3></div>${badge(r.status)}</div>${r.editedAt?'<p class="muted">Заказ изменён</p>':''}${all?`<p>${esc(r.user.name)} ${r.user.username?'@'+esc(r.user.username):''}</p>`:''}${r.manager?`<p class="muted">Менеджер: ${esc(r.manager.name)} · @${esc(r.manager.username)}</p>`:''}<strong>${money(r.total)}</strong><span class="muted"> · ${r.lines.reduce((s,l)=>s+l.quantity,0)} шт.</span><details><summary>Состав заказа</summary><ul>${r.lines.map(l=>`<li>${esc(l.sku)} · ${esc(l.name)} — <b>${l.quantity} шт.</b></li>`).join('')}</ul>${r.comment?`<p>${esc(r.comment)}</p>`:''}</details><div class="actions">${r.status==='placed'||all&&r.status==='confirmed'?`<button class="secondary" data-edit-order="${r.id}">Изменить</button>`:''}${all&&r.status==='placed'?`<button class="primary" data-confirm="${r.id}">Подтвердить</button>`:''}${r.status==='placed'||all&&r.status==='confirmed'?`<button class="danger" data-cancel="${r.id}">Отменить заказ</button>`:''}</div></article>`).join(''):'<div class="empty"><strong>Заказов пока нет</strong>Выберите поступление и добавьте нужные товары.</div>';
+    $('#orders').innerHTML=orders.length?orders.map(r=>`<article class="order"><div class="top"><div><small>№ ${esc(r.id.slice(0,8))} · ${date(r.createdAt)}</small><h3 style="margin-top:8px">${esc(r.shipmentTitle)}</h3></div>${badge(r.status)}</div>${r.editedAt?'<p class="muted">Заказ изменён</p>':''}${all?`<p>${esc(r.user.name)} ${r.user.username?'@'+esc(r.user.username):''}</p>`:''}<strong>${money(r.total)}</strong><span class="muted"> · ${r.lines.reduce((s,l)=>s+l.quantity,0)} шт.</span><details><summary>Состав заказа</summary><ul>${r.lines.map(l=>`<li>${esc(l.sku)} · ${esc(l.name)} — <b>${l.quantity} шт.</b></li>`).join('')}</ul>${r.comment?`<p>${esc(r.comment)}</p>`:''}</details><div class="actions">${r.status==='placed'||all&&r.status==='confirmed'?`<button class="secondary" data-edit-order="${r.id}">Изменить</button>`:''}${all&&r.status==='placed'?`<button class="primary" data-confirm="${r.id}">Подтвердить</button>`:''}${r.status==='placed'||all&&r.status==='confirmed'?`<button class="danger" data-cancel="${r.id}">Отменить заказ</button>`:''}</div></article>`).join(''):'<div class="empty"><strong>Заказов пока нет</strong>Выберите поступление и добавьте нужные товары.</div>';
     document.querySelectorAll('[data-edit-order]').forEach(b=>b.onclick=()=>editOrderForm(orders.find(r=>r.id===b.dataset.editOrder),all));
     document.querySelectorAll('[data-cancel]').forEach(b=>b.onclick=()=>changeOrder(b.dataset.cancel,'cancelled',all));
     document.querySelectorAll('[data-confirm]').forEach(b=>b.onclick=()=>changeOrder(b.dataset.confirm,'confirmed',all));
@@ -175,7 +171,7 @@ async function renderOrders(all=false){
 }
 async function editOrderForm(order,all){
   let shipment;
-  try{shipment=(await api('/catalog')).shipments.find(s=>s.id===order.shipmentId);if(!shipment)throw Error('Поступление недоступно. Обратитесь к менеджеру.');}catch(e){toast(e.message);return;}
+  try{shipment=(await api('/catalog')).shipments.find(s=>s.id===order.shipmentId);if(!shipment)throw Error('Поступление недоступно. Обратитесь в магазин.');}catch(e){toast(e.message);return;}
   const originals=new Map(order.lines.map(l=>[l.id,l])),draft=new Map(order.lines.map(l=>[l.id,l.quantity]));
   let requestKey=null;
   showDialog('Изменить заказ',`<p class="muted">${esc(order.shipmentTitle)}</p><p class="fine-print">Поставьте 0, чтобы убрать позицию. Увеличение количества возможно в пределах наличия. Для полного отказа отмените заказ.</p><form id="edit-order-form"><div id="edit-order-lines"></div><label class="field">Добавить товар<select id="add-order-product"><option value="">Выберите товар</option></select></label><p class="fine-print">Цена ранее выбранных позиций сохраняется. Новые позиции добавляются по текущей цене.</p><label class="field">Комментарий<textarea id="edit-order-comment" maxlength="1000">${esc(order.comment)}</textarea></label><p class="cart-total" id="edit-order-total"></p><p id="edit-order-error" class="error" role="alert"></p><button type="button" class="secondary full" id="reload-orders" hidden>Обновить список заказов</button><button class="primary full" type="submit" id="save-order">Сохранить изменения</button></form>`);
@@ -214,12 +210,11 @@ function changeOrder(id,status,all){
 }
 function renderAdmin(){
   if(!state.admin){state.view='shipments';render();return;}
-  app.innerHTML=`<div class="page-heading"><div><p class="eyebrow">SALLES / NEWSLETTERS</p><h1>Управление</h1></div><button class="primary" id="new-shipment">+ Поступление</button></div><div class="actions"><button class="primary" id="sync-stock">Обновить остатки из Excel</button><button class="secondary" id="all-orders">Все заказы</button><button class="secondary" id="managers">Менеджеры</button><button class="secondary" id="setup-bot">Подключить бота</button></div><section class="admin-panel">${state.shipments.length?state.shipments.map(s=>`<div class="admin-row"><div><strong>${esc(s.title)}</strong><small>${s.products.length} позиций · ${date(s.eta)}</small>${badge(s.status)}</div><div class="shipment-actions"><button class="secondary" data-edit="${esc(s.id)}">Изменить</button><button class="danger" data-delete-shipment="${esc(s.id)}">Удалить</button></div></div>`).join(''):'<p class="muted">Загрузите Excel, проверьте товары и опубликуйте поступление.</p>'}</section>`;
+  app.innerHTML=`<div class="page-heading"><div><h1>Управление</h1></div><button class="primary" id="new-shipment">+ Поступление</button></div><div class="actions"><button class="primary" id="sync-stock">Обновить остатки из Excel</button><button class="secondary" id="all-orders">Все заказы</button><button class="secondary" id="setup-bot">Подключить бота</button></div><section class="admin-panel">${state.shipments.length?state.shipments.map(s=>`<div class="admin-row"><div><strong>${esc(s.title)}</strong><small>${s.products.length} позиций · ${date(s.eta)}</small>${badge(s.status)}</div><div class="shipment-actions"><button class="secondary" data-edit="${esc(s.id)}">Изменить</button><button class="danger" data-delete-shipment="${esc(s.id)}">Удалить</button></div></div>`).join(''):'<p class="muted">Загрузите Excel, проверьте товары и опубликуйте поступление.</p>'}</section>`;
   $('#sync-stock').onclick=showStockSync;
   $('#new-shipment').onclick=()=>editShipment();$('#all-orders').onclick=()=>{state.view='all-orders';render();};
   document.querySelectorAll('[data-delete-shipment]').forEach(b=>b.onclick=()=>deleteShipment(state.shipments.find(s=>s.id===b.dataset.deleteShipment)));
   $('#setup-bot').onclick=showBotSetup;
-  $('#managers').onclick=editManagers;
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editShipment(state.shipments.find(s=>s.id===b.dataset.edit)));
 }
 function showStockSync(){
@@ -271,25 +266,6 @@ function deleteShipment(shipment){
       if(state.current===shipment.id){state.current=null;state.cart={};state.requestKey=null;}
       closeDialog();render();toast('Поступление удалено.');
     }catch(e){error.textContent=e.message;button.disabled=false;}
-  };
-}
-async function editManagers(){
-  let list;
-  try{list=(await api('/managers')).managers;}catch(e){toast(e.message);return;}
-  showDialog('Менеджеры',`<p class="fine-print">Клиент выбирает имя при оформлении. Telegram-ник добавляется в сообщение с заказом.</p><form id="managers-form"><div id="manager-rows"></div><button type="button" class="secondary" id="add-manager">+ Менеджер</button><p class="fine-print">Удаление менеджера убирает его из выбора для новых заказов. В оформленных заказах сохраняются прежние имя и ник.</p><p class="error" id="managers-error" role="alert"></p><button class="primary full" type="submit">Сохранить менеджеров</button></form>`);
-  const form=$('#managers-form');
-  function addRow(m={id:crypto.randomUUID(),name:'',username:''}){
-    const row=document.createElement('div');row.className='manager-editor';row.dataset.managerId=m.id;
-    row.innerHTML=`<label class="field">Имя<input data-manager-name required maxlength="80" value="${esc(m.name)}" placeholder="Например, Анна"></label><label class="field">Telegram-ник<input data-manager-username required maxlength="33" value="${esc(m.username?'@'+m.username:'')}" placeholder="@username" autocapitalize="none" spellcheck="false" pattern="@?[A-Za-z][A-Za-z0-9_]{0,31}"></label><button type="button" class="danger">Удалить</button>`;
-    row.querySelector('button').onclick=()=>row.remove();$('#manager-rows').append(row);
-  }
-  list.forEach(addRow);if(!list.length)addRow();$('#add-manager').onclick=()=>{if(form.querySelectorAll('.manager-editor').length<100)addRow();};
-  form.onsubmit=async e=>{
-    e.preventDefault();const error=$('#managers-error');error.textContent='';
-    const managers=[...form.querySelectorAll('.manager-editor')].map(row=>({id:row.dataset.managerId,name:row.querySelector('[data-manager-name]').value,username:row.querySelector('[data-manager-username]').value}));
-    const controls=[...form.querySelectorAll('input,button')];controls.forEach(c=>c.disabled=true);
-    try{state.managers=(await api('/admin/managers','PUT',{managers})).managers;closeDialog();toast('Список менеджеров сохранён.');}
-    catch(e){error.textContent=e.message;controls.forEach(c=>c.disabled=false);}
   };
 }
 function showBotSetup(){

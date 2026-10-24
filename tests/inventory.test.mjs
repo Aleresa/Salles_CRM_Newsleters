@@ -12,12 +12,11 @@ function fixture(){
   const sql={exec(query,...args){const s=db.prepare(query);if(/^SELECT/i.test(query))return s.all(...args);s.run(...args);return [];}};
   const txn=fn=>{db.exec('BEGIN IMMEDIATE');try{const r=fn();db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}};
   const inv=new Inventory(sql,txn);
-  inv.saveManagers({managers:[{id:'manager-1',name:'Test manager',username:'test_manager'}]});
   const shipment={id:'sample',title:'Поступление',brand:'Test',status:'arrived',eta:'2026-10-01',products:[{id:'p1',sku:'1',name:'Кабель',stock:10,price:16000},{id:'p2',sku:'2',name:'Чехол',stock:2,price:50000}]};
   inv.importShipment(shipment);
   return {inv,shipment,sql,txn};
 }
-const request=(key,qty=3)=>({shipmentId:'sample',requestKey:key,managerId:'manager-1',lines:[{id:'p1',quantity:qty}]});
+const request=(key,qty=3)=>({shipmentId:'sample',requestKey:key,lines:[{id:'p1',quantity:qty}]});
 test('order uses server price, deducts stock, creates notification in same transaction',()=>{
   const {inv}=fixture();const r=inv.placeOrder(user,{...request('key'),total:1,lines:[{id:'p1',quantity:3,price:1}]});
   assert.equal(r.total,48000);assert.equal(inv.catalog()[0].products[0].stock,7);assert.equal(inv.rows('SELECT * FROM outbox').length,1);
@@ -43,7 +42,7 @@ test('cancellation restores stock exactly once; other clients cannot cancel or r
 });
 test('confirmation does not deduct twice; only admin can cancel confirmed order',()=>{
   const {inv}=fixture();const r=inv.placeOrder(user,request('key'));assert.throws(()=>inv.changeOrder(user,r.id,'confirmed'),/прав/);
-  inv.changeOrder(user,r.id,'confirmed',true);assert.equal(inv.catalog()[0].products[0].stock,7);assert.throws(()=>inv.changeOrder(user,r.id,'cancelled'),/менеджером/);inv.changeOrder(user,r.id,'cancelled',true);assert.equal(inv.catalog()[0].products[0].stock,10);
+  inv.changeOrder(user,r.id,'confirmed',true);assert.equal(inv.catalog()[0].products[0].stock,7);assert.throws(()=>inv.changeOrder(user,r.id,'cancelled'),/магазином/);inv.changeOrder(user,r.id,'cancelled',true);assert.equal(inv.catalog()[0].products[0].stock,10);
 });
 test('updating shipment retains orders and rejects totals below placed',()=>{
   const {inv,shipment}=fixture();inv.placeOrder(user,request('key',7));shipment.products[0].stock=20;inv.importShipment(shipment);assert.equal(inv.catalog()[0].products[0].stock,13);
@@ -161,54 +160,36 @@ test('bot setup reports Telegram failures without exposing token or secret',asyn
   assert(!body.includes(token));assert(!body.includes(store.webhookSecret()));
 });
 
-test('manager is required, validated on server, and included in notification',()=>{
-  const {inv}=fixture();
-  for(const managerId of [undefined,'missing'])assert.throws(()=>inv.placeOrder(user,{...request('bad'),managerId}),/менеджера/);
-  assert.equal(inv.catalog()[0].products[0].stock,10);assert.equal(inv.rows('SELECT * FROM outbox').length,0);
-  const r=inv.placeOrder(user,{...request('good'),manager:{name:'Forged',username:'wrong_person'}});
-  assert.deepEqual(r.manager,{id:'manager-1',name:'Test manager',username:'test_manager'});
-  assert.match(JSON.parse(inv.rows('SELECT data FROM outbox')[0].data).text,/Менеджер: Test manager @test_manager/);
-});
-
-test('manager snapshot survives edits/removal; retry cannot change assignment',()=>{
-  const {inv}=fixture();const r=inv.placeOrder(user,request('original'));
-  inv.saveManagers({managers:[{id:'manager-2',name:'Other manager',username:'other_manager'}]});
-  assert.equal(inv.placeOrder(user,request('original')).id,r.id);
-  assert.throws(()=>inv.placeOrder(user,{...request('original'),managerId:'manager-2'}),/другим содержимым/);
-  assert.throws(()=>inv.placeOrder(user,request('new')),/менеджера/);
-  const cancelled=inv.changeOrder(user,r.id,'cancelled');assert.equal(cancelled.manager.username,'test_manager');
-  const messages=inv.rows('SELECT data FROM outbox').map(x=>JSON.parse(x.data).text);
-  assert(messages.every(text=>text.includes('@test_manager')));assert.equal(inv.catalog()[0].products[0].stock,10);
-});
-
-test('manager list rejects duplicate usernames and invalid handles without losing existing list',()=>{
-  const {inv}=fixture();
-  for(const managers of [
-    [{id:'a',name:'A',username:'@same_user'},{id:'b',name:'B',username:'SAME_USER'}],
-    [{id:'a',name:'A',username:'https://t.me/person'}],
-    [{id:'a',name:'A',username:'one_user\n@other_user'}]
-  ])assert.throws(()=>inv.saveManagers({managers}));
-  assert.equal(inv.managers()[0].id,'manager-1');
-});
-
-test('only admin can change managers; authenticated clients can read the choices',async()=>{
-  const {sql,txn}=fixture(),token='test:managers';
-  const store=new NewsletterStore({storage:{sql,transactionSync:txn}},{BOT_TOKEN:token,ADMIN_IDS:'999'});
-  const headers={'Content-Type':'application/json','X-Telegram-Init-Data':signedData(token)};
-  assert.equal((await store.fetch(new Request('https://app/api/managers'))).status,401);
-  assert.equal((await store.fetch(new Request('https://app/api/managers',{headers}))).status,200);
-  assert.equal((await store.fetch(new Request('https://app/api/admin/managers',{method:'PUT',headers,body:'{"managers":[]}'}))).status,403);
-  assert.equal(store.inventory.managers().length,1);
-});
-
-test('legacy orders remain readable, cancellable, and retryable without a manager',()=>{
-  const {inv}=fixture();const input=request('legacy'),r=inv.placeOrder(user,input);
-  delete r.manager;
-  inv.sql.exec('UPDATE orders SET data=?,fingerprint=? WHERE id=?',JSON.stringify(r),JSON.stringify({shipment:input.shipmentId,lines:input.lines,comment:''}),r.id);
-  const {managerId,...legacyInput}=input;
-  assert.equal(inv.placeOrder(user,legacyInput).id,r.id);
+test('placing an order needs no manager, and forged assignment cannot affect the order',()=>{
+  const {inv}=fixture();const order=inv.placeOrder(user,{...request('simple'),managerId:'obsolete',manager:{name:'fake'}});
+  assert.equal(order.manager,undefined);
   assert.equal(inv.orders(user)[0].manager,undefined);
-  inv.changeOrder(user,r.id,'cancelled');assert.equal(inv.catalog()[0].products[0].stock,10);
+  assert.doesNotMatch(inv.notificationText(order),/Менеджер|manager/i);
+  assert.equal(inv.catalog()[0].products[0].stock,7);
+  assert.equal(inv.placeOrder(user,request('simple')).id,order.id);
+});
+
+test('upgrading legacy assignments removes managers but preserves orders, stock and retry semantics',()=>{
+  const {inv,sql,txn}=fixture();const order=inv.placeOrder(user,request('legacy'));
+  const historic={...order,manager:{id:'old',name:'Ex manager',username:'old'}};
+  sql.exec('CREATE TABLE managers(id TEXT PRIMARY KEY, data TEXT NOT NULL)');
+  sql.exec('INSERT INTO managers(id,data) VALUES(?,?)','old',JSON.stringify(historic.manager));
+  sql.exec('UPDATE orders SET data=?,fingerprint=? WHERE id=?',JSON.stringify(historic),JSON.stringify({shipment:'sample',lines:[{id:'p1',quantity:3}],comment:'',managerId:'old'}),order.id);
+  const upgraded=new Inventory(sql,txn);
+  assert.equal(upgraded.one("SELECT name FROM sqlite_master WHERE type='table' AND name='managers'"),undefined);
+  assert.equal(upgraded.placeOrder(user,request('legacy')).id,order.id);
+  assert.equal(upgraded.orders(user)[0].manager,undefined);
+  assert.doesNotMatch(upgraded.notificationText(upgraded.orders(user)[0]),/Менеджер|manager/i);
+  assert.equal(upgraded.catalog()[0].products[0].stock,7);
+  upgraded.changeOrder(user,order.id,'cancelled');assert.equal(upgraded.catalog()[0].products[0].stock,10);
+});
+
+test('retired manager API endpoints return 404',async()=>{
+  const {sql,txn}=fixture(),token='test:old-endpoints';
+  const store=new NewsletterStore({storage:{sql,transactionSync:txn}},{BOT_TOKEN:token,ADMIN_IDS:'123'});
+  const headers={'Content-Type':'application/json','X-Telegram-Init-Data':signedData(token)};
+  assert.equal((await store.fetch(new Request('https://app/api/managers',{headers}))).status,404);
+  assert.equal((await store.fetch(new Request('https://app/api/admin/managers',{method:'PUT',headers,body:'{"managers":[]}'}))).status,404);
 });
 
 const editInput=(r,lines,extra={})=>({requestKey:crypto.randomUUID(),expectedRevision:r.revision||1,lines,comment:r.comment,...extra});
@@ -218,7 +199,7 @@ test('editing adjusts only stock differences, preserves agreed prices, and cance
   shipment.products[0].price=99000;inv.importShipment(shipment);
   const edit=editInput(r,[{id:'p1',quantity:4},{id:'p2',quantity:1}],{comment:'Updated'});
   const changed=inv.editOrder(user,r.id,edit);
-  assert.equal(changed.total,4*16000+50000);assert.equal(changed.revision,2);assert.equal(changed.manager.username,'test_manager');
+  assert.equal(changed.total,4*16000+50000);assert.equal(changed.revision,2);assert.equal(changed.manager,undefined);
   assert.deepEqual(inv.catalog()[0].products.map(p=>p.stock),[1,1]);
   assert.equal(inv.editOrder(user,r.id,edit).repeated,true);assert.deepEqual(inv.catalog()[0].products.map(p=>p.stock),[1,1]);
   const shrunk=inv.editOrder(user,r.id,editInput(changed,[{id:'p2',quantity:2}]));
@@ -273,7 +254,7 @@ test('Telegram send IDs persist across restarts; edit, confirm and cancel update
   restarted.inventory.changeOrder(user,r.id,'cancelled',true);await restarted.flush();
   assert.deepEqual(calls.map(c=>c.method),['sendMessage','editMessageText','editMessageText','editMessageText']);
   assert(calls.slice(1).every(c=>c.body.message_id===77));
-  assert.match(calls[1].body.text,/Заказ изменён/);assert.match(calls[1].body.text,/4 шт/);assert.match(calls[1].body.text,/@test_manager/);
+  assert.match(calls[1].body.text,/Заказ изменён/);assert.match(calls[1].body.text,/4 шт/);assert.doesNotMatch(calls[1].body.text,/Менеджер:/);
   assert.match(calls[3].body.text,/Заказ отменён/);assert.equal(changed.revision,2);
 });
 test('queued updates send latest state once; transient edit errors retry without a new message',async t=>{
